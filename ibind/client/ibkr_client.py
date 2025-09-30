@@ -15,6 +15,7 @@ from ibind.client.ibkr_client_mixins.watchlist_mixin import WatchlistMixin
 from ibind.client.ibkr_utils import Tickler
 from ibind.support.errors import ExternalBrokerError
 from ibind.support.logs import new_daily_rotating_file_handler, project_logger
+from ibind.support.py_utils import exception_to_string
 
 if TYPE_CHECKING:  # pragma: no cover
     from ibind.oauth import OAuthConfig
@@ -51,6 +52,7 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
         max_retries: int = 3,
         use_session: bool = var.IBIND_USE_SESSION,
         auto_register_shutdown: bool = var.IBIND_AUTO_REGISTER_SHUTDOWN,
+        log_responses: bool = var.IBIND_LOG_RESPONSES,
         use_oauth: bool = var.IBIND_USE_OAUTH,
         oauth_config: 'OAuthConfig' = None,
     ) -> None:
@@ -74,7 +76,7 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
             use_oauth (bool, optional): Whether to use OAuth authentication. Defaults to False.
             oauth_config (OAuthConfig, optional): The configuration for the OAuth authentication. OAuth1aConfig is used if not specified.
         """
-
+        self._tickler: Optional[Tickler] = None
         self._use_oauth = use_oauth
 
         if self._use_oauth:
@@ -97,6 +99,7 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
             max_retries=max_retries,
             use_session=use_session,
             auto_register_shutdown=auto_register_shutdown,
+            log_responses=log_responses,
         )
 
         self.logger.info('#################')
@@ -153,7 +156,6 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
             ExternalBrokerError: If the token request fails.
         """
         from ibind.oauth.oauth1a import req_live_session_token
-
         self.live_session_token, self.live_session_token_expires_ms, self.live_session_token_signature = req_live_session_token(
             self, self.oauth_config
         )
@@ -225,10 +227,11 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
 
         """
         _LOGGER.info(f'{self}: Starting Tickler to maintain the connection alive')
-        self._tickler = Tickler(self, interval)
+        if self._tickler is None:
+            self._tickler = Tickler(self, interval)
         self._tickler.start()
 
-    def stop_tickler(self, timeout=None):
+    def stop_tickler(self, timeout:float=None):
         """
         Stops the Tickler thread if the Tickler is running.
 
@@ -239,7 +242,7 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
             timeout (Optional[float]): Maximum time to wait for the Tickler thread to terminate.
                                        If None, waits indefinitely.
         """
-        if hasattr(self, '_tickler') and self._tickler is not None:
+        if self._tickler is not None:
             self._tickler.stop(timeout)
 
     def close(self):
@@ -257,3 +260,47 @@ class IbkrClient(RestClient, AccountsMixin, ContractMixin, MarketdataMixin, Orde
         _LOGGER.info(f'{self}: Shutting down OAuth')
         self.stop_tickler()
         self.logout()
+
+
+    def handle_health_status(self) -> bool:
+        """
+        Handles the health status of the IBKR connection.
+
+        If the connection is not healthy, it attempts to re-establish OAuth authentication.
+
+        Returns:
+            bool: True if the connection is healthy, False otherwise.
+        """
+        healthy = self.check_health()
+        if healthy:
+            # All good, do nothing.
+            return True
+
+        if not self._use_oauth:
+            # Do nothing; wait for a reconnection either from IBeam or manually.
+            _LOGGER.warning('IBKR connection is not healthy. Ensure authentication with the Gateway is re-established.')
+            return False
+
+        _LOGGER.warning('IBKR connection is not healthy. Attempting to re-establish OAuth authentication.')
+        try:
+            self.stop_tickler(15)
+        except Exception as e:  # pragma: no cover
+            _LOGGER.error(f'Error stopping tickler during reauthentication: {exception_to_string(e)}')
+
+        try:
+            self.oauth_init(
+                maintain_oauth=self.oauth_config.maintain_oauth,
+                init_brokerage_session=self.oauth_config.init_brokerage_session,
+            )
+        except ExternalBrokerError as e:
+            if "Failed to resolve 'api.ibkr.com'" in str(e):
+                _LOGGER.error('Connection to IBKR servers failed during reauthentication. Check internet connection between IBind and \'api.ibkr.com\'')
+            elif 'An attempt was made to access a socket in a way forbidden by its access permissions' in str(e):
+                _LOGGER.error('Connection to IBKR servers blocked during reauthentication. Check that nothing is blocking connectivity of the application')
+            elif e.status_code == 410 and 'gone' in str(e):
+                _LOGGER.error(f'OAuth 410 gone: recreate a new live session token, or try a different server, eg. "1.api.ibkr.com", "2.api.ibkr.com", etc.')
+            else:
+                _LOGGER.error(f'Unknown error checking IBKR connection during reauthentication: {exception_to_string(e)}')
+        except Exception as e: # pragma: no cover
+            _LOGGER.error(f'Error reauthenticating OAuth during reauthentication: {exception_to_string(e)}')
+        return False
