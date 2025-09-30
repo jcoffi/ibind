@@ -32,7 +32,7 @@ Purpose
     - support/: logging, errors, parallel execution, misc utils
     - var.py: environment-backed configuration (IBIND_* variables)
   - test/: helper utilities for logging assertions (no CI test step configured).
-  - .github/workflows/ci.yml: CI runs make install → make lint → make scan on master and PRs.
+  - .workflows/ci.yml: CI runs make install → make lint → make scan on master and PRs.
 
 3) How to set up your environment (bootstrap) — always do this first
 - Python: use 3.10–3.13 to match CI. Create/activate a virtualenv.
@@ -119,7 +119,7 @@ Purpose
   - All required fields are validated; missing values or missing key files raise clear errors.
 
 7) CI expectations and how to keep PRs green
-- Workflow: .github/workflows/ci.yml
+- Workflow: .workflows/ci.yml
   - Matrix: Python [3.10, 3.11, 3.12, 3.13] on ubuntu-latest and windows-latest.
   - Steps: actions/checkout → make install → make lint → make scan.
 - What this means for you:
@@ -149,7 +149,7 @@ Purpose
   - ibind/var.py: all IBIND_* env vars with defaults.
 - Config and pipelines
   - pyproject.toml: Ruff rules (E/W/S/N/PL) with ignores (line length, magic values, etc.), line length 150; formatter preferences.
-  - .github/workflows/ci.yml: exact CI steps to replicate locally.
+  - .workflows/ci.yml: exact CI steps to replicate locally.
   - Makefile: canonical local commands (install, lint, scan, clean).
 
 10) Minimal local validation checklist before committing
