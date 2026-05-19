@@ -2,6 +2,7 @@ import datetime
 import logging
 import sys
 from pathlib import Path
+from typing import List
 
 from ibind import var
 
@@ -9,6 +10,25 @@ DEFAULT_FORMAT = '%(asctime)s|%(levelname)-.1s| %(message)s'
 
 _initialized = False
 _log_to_file = False
+
+
+def get_logger_children(main_logger) -> List[logging.Logger]:
+    """
+    Gets child loggers. Added as a support compat for Python version 3.11 and below.
+    Source: https://github.com/python/cpython/blob/3.12/Lib/logging/__init__.py#L1831
+    """
+    if hasattr(main_logger, 'getChildren'):
+        return list(main_logger.getChildren())
+
+    def _hierlevel(logger):
+        if logger is logger.manager.root:
+            return 0
+        return 1 + logger.name.count('.')
+
+    d = main_logger.manager.loggerDict
+    return [item for item in d.values()
+            if isinstance(item, logging.Logger) and item.parent is main_logger and
+            _hierlevel(item) == 1 + _hierlevel(item.parent)]
 
 
 def project_logger(filepath=None):
@@ -98,16 +118,25 @@ def new_daily_rotating_file_handler(logger_name, filepath):
     logger = logging.getLogger(f'ibind_fh.{logger_name}')
 
     if _log_to_file:
-        _LOGGER.info(f'New daily rotating file handler for logger "{logger_name}": {filepath}')
-        if len(logger.handlers) == 0:
+        ibind_filehandler = None
+        for handler in logger.handlers:
+            if isinstance(handler, DailyRotatingFileHandler) and handler.name == logger_name:
+                ibind_filehandler = handler
+                break
+
+        if ibind_filehandler is None:
+            _LOGGER.info(f'New daily rotating file handler for logger "{logger_name}": {filepath}')
             fh_logger = logging.getLogger('ibind_fh')
-            handler = DailyRotatingFileHandler(filepath, encoding='utf-8')
+            handler = DailyRotatingFileHandler(filename=filepath, encoding='utf-8')
+            handler.name = logger_name
             handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
             # if filehandler outputs are disabled, this should bring over the filter that will do this
             for filter in fh_logger.filters:
                 logger.addFilter(filter)
             logger.addHandler(handler)
+        else:
+            _LOGGER.info(f'Existing daily rotating file handler for logger "{logger_name}": {filepath}')
 
         logger.setLevel(logging.DEBUG)
     else:

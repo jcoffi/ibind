@@ -315,6 +315,7 @@ class IbkrWsClient(WsClient):
         self._last_heartbeat = 0
         self._server_id_conid_pairs: Dict[IbkrWsKey, Dict[str, int]] = defaultdict(dict)
         self._queue_accessors: Dict[IbkrWsKey, QueueAccessor] = {}
+        self._tic_message = {}
 
         if start:
             self.start()
@@ -486,6 +487,9 @@ class IbkrWsClient(WsClient):
             # in general most message should carry a topic, other than for few exceptions
             self._handle_message_without_topic(message)
 
+        elif topic == 'tic':
+            self._tic_message = message
+
         elif topic == 'system':
             if 'hb' in message:
                 self._last_heartbeat = message['hb']
@@ -602,7 +606,7 @@ class IbkrWsClient(WsClient):
             bool: True if the subscription was successful, False otherwise.
         """
         if channel[:2] == 'or':
-            if not wait_until(self._ibkr_client.check_health, 'IbkrClient not healthy before subscribing to orders', timeout=15):
+            if not wait_until(self._ibkr_client.check_health, 'IbkrClient not healthy before subscribing to orders', timeout=15, sleep=3):
                 return False
             self._ibkr_client.receive_brokerage_accounts()
             time.sleep(0.25)
@@ -682,3 +686,29 @@ class IbkrWsClient(WsClient):
             - This method is provided for convenience and should not be used in production code. A new QueueAccessor object should be acquired instead using `new_queue_accessor`.
         """
         return self._queue_accessor(ibkr_ws_key).empty()
+
+    def tic(self):
+        """
+        Sends a tic request to the IBKR WebSocket server and waits for the response.
+
+        This method sends a 'tic' message to the server and waits for the server to update
+        the internal tic message with a new timestamp. It uses the 'lastAccessed' field
+        to detect when a fresh response has been received.
+
+        Returns:
+            dict: The tic message dictionary containing server response data, or None if
+                  the send operation failed or the response timed out.
+        """
+        ts = self._tic_message.get('lastAccessed', 0)
+        ret = self.send('tic')
+
+        if not ret:
+            return None
+
+        def ts_changed():
+            return self._tic_message.get('lastAccessed', 0) != ts
+
+        if not wait_until(ts_changed, f'tic timeout, ts={ts}', timeout=5):
+            return None
+
+        return self._tic_message
